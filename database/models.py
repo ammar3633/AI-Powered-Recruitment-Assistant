@@ -1,7 +1,6 @@
 """
 Database models for AI-Powered Recruitment Assistant
 """
-
 from datetime import datetime
 from typing import List, Optional
 from dataclasses import dataclass, field
