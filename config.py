@@ -56,7 +56,6 @@ MCP_SERVERS_CONFIG = {
     },
 }
 
-# Database configuration
 DATABASE_CONFIG = {
     "type": "in_memory",  # Options: in_memory, sqlite, postgresql
     "path": "recruitment.db",  # For SQLite
