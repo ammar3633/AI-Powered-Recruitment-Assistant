@@ -3,42 +3,76 @@ Resume Parser MCP Server
 Handles resume parsing and extraction of candidate information
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
 import logging
+import re
+import uuid
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Skill taxonomy — grouped for weighted matching
+# ---------------------------------------------------------------------------
+SKILL_GROUPS: Dict[str, List[str]] = {
+    "languages":   ["python", "java", "javascript", "typescript", "c++", "c#", "go", "ruby", "swift", "kotlin", "rust", "scala", "php", "r"],
+    "web":         ["react", "angular", "vue", "nodejs", "django", "flask", "fastapi", "spring", "express", "html", "css"],
+    "data":        ["machine learning", "deep learning", "data science", "nlp", "computer vision", "pandas", "numpy", "tensorflow", "pytorch", "scikit-learn"],
+    "databases":   ["sql", "postgresql", "mysql", "mongodb", "redis", "elasticsearch", "cassandra", "dynamodb"],
+    "cloud":       ["aws", "azure", "gcp", "google cloud", "heroku", "cloudflare"],
+    "devops":      ["docker", "kubernetes", "terraform", "ansible", "jenkins", "github actions", "ci/cd", "linux"],
+    "practices":   ["rest api", "graphql", "agile", "scrum", "git", "tdd", "microservices", "system design"],
+}
+
+ALL_SKILLS: List[str] = [skill for group in SKILL_GROUPS.values() for skill in group]
+
+EDUCATION_LEVELS: Dict[str, int] = {
+    "phd": 4, "doctorate": 4,
+    "master": 3, "ms": 3, "mtech": 3, "mba": 3, "m.tech": 3,
+    "bachelor": 2, "bs": 2, "btech": 2, "b.tech": 2, "be": 2,
+    "diploma": 1, "associate": 1,
+}
+
+# Regex patterns compiled once
+_EMAIL_RE    = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_PHONE_RE    = re.compile(r"(\+\d{1,3}[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{4}")
+_EXP_RE      = re.compile(r"(\d+(?:\.\d+)?)\s*\+?\s*years?\s+(?:of\s+)?experience", re.IGNORECASE)
+_EXP_SINCE_RE = re.compile(r"(?:since|from)\s+(20\d{2}|19\d{2})", re.IGNORECASE)
+_NAME_RE     = re.compile(r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})", re.MULTILINE)
+_COMPANY_RE  = re.compile(
+    r"(?:at|@|with|for|worked at|employed at)\s+([A-Z][A-Za-z0-9\s&.,]{2,40}?)(?:\s*[,|\n|–|-]|$)",
+    re.MULTILINE
+)
+_LINKEDIN_RE = re.compile(r"linkedin\.com/in/([A-Za-z0-9\-_%]+)", re.IGNORECASE)
+_GITHUB_RE   = re.compile(r"github\.com/([A-Za-z0-9\-_%]+)", re.IGNORECASE)
 
 
 class ResumeParserMCP:
     """
-    MCP Server for resume parsing
-    Handles parsing, extraction, and analysis of resume documents
+    MCP Server for resume parsing.
+    Handles parsing, extraction, scoring, and comparison of resume documents.
     """
 
     def __init__(self):
-        """Initialize Resume Parser MCP server"""
         self.parsed_resumes: Dict[str, Dict] = {}
         self.server_name = "Resume Parser MCP"
         logger.info("Resume Parser MCP Server initialized")
 
+    # ------------------------------------------------------------------ #
+    # Core parse / retrieve                                                #
+    # ------------------------------------------------------------------ #
+
     def parse_resume(self, resume_content: str, file_name: str = "") -> str:
         """
-        Parse a resume document
-        
-        Args:
-            resume_content: Raw resume text content
-            file_name: Optional file name
-            
+        Parse a resume document and store the result.
+
         Returns:
             Resume ID
         """
-        import uuid
-        import re
+        if not resume_content or not resume_content.strip():
+            raise ValueError("resume_content cannot be empty.")
 
         resume_id = str(uuid.uuid4())
-
-        # Extract basic information from resume content
         parsed_data = self._extract_information(resume_content)
 
         self.parsed_resumes[resume_id] = {
@@ -48,292 +82,333 @@ class ResumeParserMCP:
             "parsed_at": datetime.now().isoformat(),
             **parsed_data,
         }
-
-        logger.info(f"Parsed resume: {resume_id} from file: {file_name}")
+        logger.info(f"Parsed resume: {resume_id} (file: '{file_name}')")
         return resume_id
 
-    def _extract_information(self, resume_text: str) -> Dict[str, Any]:
-        """
-        Extract key information from resume text
-        Uses pattern matching for demonstration
-        
-        Args:
-            resume_text: Raw resume text
-            
-        Returns:
-            Dictionary with extracted information
-        """
-        import re
-
-        data = {
-            "name": "",
-            "email": "",
-            "phone": "",
-            "experience_years": 0,
-            "skills": [],
-            "education": [],
-            "previous_companies": [],
-        }
-
-        # Extract email
-        email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
-        email_match = re.search(email_pattern, resume_text)
-        if email_match:
-            data["email"] = email_match.group()
-
-        # Extract phone number
-        phone_pattern = r"(\+\d{1,3}[-.\s]?)?\d{3,4}[-.\s]?\d{3,4}[-.\s]?\d{4}"
-        phone_match = re.search(phone_pattern, resume_text)
-        if phone_match:
-            data["phone"] = phone_match.group()
-
-        # Extract skills (look for common skill keywords)
-        skill_keywords = [
-            "python",
-            "java",
-            "javascript",
-            "c\\+\\+",
-            "sql",
-            "machine learning",
-            "data science",
-            "aws",
-            "azure",
-            "docker",
-            "kubernetes",
-            "react",
-            "angular",
-            "nodejs",
-            "django",
-            "flask",
-            "rest api",
-            "agile",
-            "git",
-            "mongodb",
-            "postgresql",
-        ]
-
-        text_lower = resume_text.lower()
-        data["skills"] = [keyword for keyword in skill_keywords if keyword in text_lower]
-
-        # Extract education (look for degree keywords)
-        education_keywords = [
-            "bachelor",
-            "master",
-            "phd",
-            "bs",
-            "ms",
-            "btech",
-            "mtech",
-        ]
-        data["education"] = [
-            keyword for keyword in education_keywords if keyword.lower() in text_lower
-        ]
-
-        # Extract experience years (look for patterns like "5 years experience")
-        exp_pattern = r"(\d+)\s+years?\s+of\s+experience"
-        exp_match = re.search(exp_pattern, text_lower)
-        if exp_match:
-            data["experience_years"] = float(exp_match.group(1))
-
-        logger.debug(f"Extracted data from resume: {data}")
-        return data
-
     def get_parsed_resume(self, resume_id: str) -> Optional[Dict]:
-        """Get parsed resume by ID"""
+        """Get parsed resume by ID."""
         return self.parsed_resumes.get(resume_id)
 
     def extract_candidate_profile(self, resume_id: str) -> Optional[Dict]:
-        """
-        Extract a candidate profile from parsed resume
-        
-        Args:
-            resume_id: ID of parsed resume
-            
-        Returns:
-            Candidate profile dictionary
-        """
+        """Build a clean candidate profile dict from a parsed resume."""
         resume = self.get_parsed_resume(resume_id)
         if not resume:
             logger.warning(f"Resume not found: {resume_id}")
             return None
 
-        profile = {
+        return {
             "resume_id": resume_id,
             "name": resume.get("name", ""),
             "email": resume.get("email", ""),
             "phone": resume.get("phone", ""),
+            "linkedin": resume.get("linkedin", ""),
+            "github": resume.get("github", ""),
             "experience_years": resume.get("experience_years", 0),
             "skills": resume.get("skills", []),
+            "skill_groups": resume.get("skill_groups", {}),
             "education": resume.get("education", []),
+            "education_level": resume.get("education_level", 0),
             "previous_companies": resume.get("previous_companies", []),
+            "completeness_score": resume.get("completeness_score", 0),
         }
 
-        logger.info(f"Extracted candidate profile from resume: {resume_id}")
-        return profile
+    # ------------------------------------------------------------------ #
+    # Validation                                                           #
+    # ------------------------------------------------------------------ #
 
     def validate_resume(self, resume_id: str) -> Dict[str, Any]:
-        """
-        Validate parsed resume quality
-        
-        Args:
-            resume_id: ID of parsed resume
-            
-        Returns:
-            Validation report
-        """
+        """Validate parsed resume quality and return a detailed report."""
         resume = self.get_parsed_resume(resume_id)
         if not resume:
-            logger.warning(f"Resume not found: {resume_id}")
             return {"valid": False, "errors": ["Resume not found"]}
 
-        errors = []
-        warnings = []
+        errors: List[str] = []
+        warnings: List[str] = []
 
-        # Check for required fields
         if not resume.get("email"):
             errors.append("Email not found")
         if not resume.get("phone"):
-            errors.append("Phone number not found")
+            warnings.append("Phone number not found")
+        if not resume.get("name"):
+            warnings.append("Name could not be extracted")
         if not resume.get("skills"):
             warnings.append("No skills detected")
+        if resume.get("experience_years", 0) == 0:
+            warnings.append("No experience duration found — may be a fresher or unparseable")
+        if resume.get("experience_years", 0) > 50:
+            errors.append("Experience years value is unrealistically high")
+        if len(resume.get("raw_content", "")) < 100:
+            warnings.append("Resume content is very short — may be incomplete")
 
-        # Check data quality
-        if resume.get("experience_years", 0) < 0:
-            errors.append("Invalid experience years")
+        completeness = self._calculate_completeness(resume)
 
-        validation_result = {
+        return {
             "resume_id": resume_id,
             "valid": len(errors) == 0,
             "errors": errors,
             "warnings": warnings,
-            "completeness_score": self._calculate_completeness(resume),
+            "completeness_score": completeness,
+            "quality_grade": self._quality_grade(completeness, errors, warnings),
         }
 
-        logger.info(f"Validation result for resume {resume_id}: {validation_result}")
-        return validation_result
-
-    def _calculate_completeness(self, resume: Dict) -> float:
-        """Calculate completeness score for a resume (0-100)"""
-        score = 0
-        total_checks = 5
-
-        if resume.get("name"):
-            score += 1
-        if resume.get("email"):
-            score += 1
-        if resume.get("phone"):
-            score += 1
-        if resume.get("skills"):
-            score += 1
-        if resume.get("experience_years", 0) > 0:
-            score += 1
-
-        return (score / total_checks) * 100
+    # ------------------------------------------------------------------ #
+    # Job matching                                                         #
+    # ------------------------------------------------------------------ #
 
     def compare_resume_to_job(
         self, resume_id: str, job_requirements: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Compare a resume against job requirements
-        
-        Args:
-            resume_id: ID of parsed resume
-            job_requirements: Job requirements dict with required_skills, required_experience_years, etc.
-            
-        Returns:
-            Comparison result with match score
+        Compare a resume against job requirements.
+
+        Scoring:
+          - Skill match  60 %  (with bonus for nice-to-have skills)
+          - Experience   40 %  (capped at 100; extra exp gives small bonus)
+          - Education    bonus up to +5 points on final score
         """
         resume = self.get_parsed_resume(resume_id)
         if not resume:
-            logger.warning(f"Resume not found: {resume_id}")
             return {"match_percentage": 0, "errors": ["Resume not found"]}
 
-        resume_skills = set(resume.get("skills", []))
-        required_skills = set(job_requirements.get("required_skills", []))
-        resume_experience = resume.get("experience_years", 0)
-        required_experience = job_requirements.get("required_experience_years", 0)
+        resume_skills: Set[str] = set(s.lower() for s in resume.get("skills", []))
+        required_skills: Set[str] = set(s.lower() for s in job_requirements.get("required_skills", []))
+        nice_to_have: Set[str]    = set(s.lower() for s in job_requirements.get("nice_to_have_skills", []))
 
-        # Calculate skill match
+        resume_exp   = float(resume.get("experience_years", 0))
+        required_exp = float(job_requirements.get("required_experience_years", 0))
+        min_edu      = job_requirements.get("min_education_level", 0)  # 0–4 scale
+
+        # --- Skill score ---
         if required_skills:
-            matched_skills = resume_skills.intersection(required_skills)
-            skill_match_percentage = (len(matched_skills) / len(required_skills)) * 100
+            matched_required  = resume_skills & required_skills
+            matched_nice      = resume_skills & nice_to_have
+            skill_score = (len(matched_required) / len(required_skills)) * 100
+            # Nice-to-have bonus (up to 10 extra points)
+            if nice_to_have:
+                skill_score = min(100, skill_score + (len(matched_nice) / len(nice_to_have)) * 10)
         else:
-            skill_match_percentage = 100
+            matched_required  = set()
+            matched_nice      = set()
+            skill_score = 100.0
 
-        # Calculate experience match
-        if resume_experience >= required_experience:
-            experience_match_percentage = 100
+        # --- Experience score ---
+        if required_exp > 0:
+            if resume_exp >= required_exp:
+                exp_score = min(100, 100 + (resume_exp - required_exp) * 2)  # small bonus for extra exp
+            else:
+                exp_score = (resume_exp / required_exp) * 100
         else:
-            experience_match_percentage = (resume_experience / required_experience * 100) if required_experience > 0 else 100
+            exp_score = 100.0
 
-        # Overall match
-        overall_match = (skill_match_percentage + experience_match_percentage) / 2
+        # --- Education bonus ---
+        edu_level   = resume.get("education_level", 0)
+        edu_bonus   = 5 if edu_level >= min_edu and min_edu > 0 else 0
 
-        result = {
-            "resume_id": resume_id,
-            "job_id": job_requirements.get("job_id", ""),
-            "match_percentage": overall_match,
-            "skill_match_percentage": skill_match_percentage,
-            "experience_match_percentage": experience_match_percentage,
-            "matched_skills": list(resume_skills.intersection(required_skills)),
-            "missing_skills": list(required_skills - resume_skills),
-            "experience_fit": resume_experience >= required_experience,
+        # --- Final weighted score ---
+        overall = min(100, skill_score * 0.60 + exp_score * 0.40 + edu_bonus)
+
+        return {
+            "resume_id":               resume_id,
+            "job_id":                  job_requirements.get("job_id", ""),
+            "match_percentage":        round(overall, 2),
+            "skill_score":             round(skill_score, 2),
+            "experience_score":        round(exp_score, 2),
+            "education_bonus":         edu_bonus,
+            "matched_required_skills": sorted(matched_required),
+            "matched_nice_to_have":    sorted(matched_nice),
+            "missing_required_skills": sorted(required_skills - resume_skills),
+            "experience_fit":          resume_exp >= required_exp,
+            "education_fit":           edu_level >= min_edu,
         }
 
-        logger.info(f"Resume comparison: {result}")
-        return result
+    # ------------------------------------------------------------------ #
+    # Search                                                               #
+    # ------------------------------------------------------------------ #
 
     def search_resumes(self, query: str, field: str = "all") -> List[Dict]:
-        """
-        Search parsed resumes
-        
-        Args:
-            query: Search query
-            field: Field to search in (name, email, skills, education, all)
-            
-        Returns:
-            List of matching resumes
-        """
+        """Search parsed resumes by name, email, skill, education, or company."""
         query_lower = query.lower()
         results = []
 
         for resume in self.parsed_resumes.values():
-            match = False
+            if field in ("all", "name") and query_lower in resume.get("name", "").lower():
+                results.append(resume); continue
+            if field in ("all", "email") and query_lower in resume.get("email", "").lower():
+                results.append(resume); continue
+            if field in ("all", "skills") and any(query_lower in s.lower() for s in resume.get("skills", [])):
+                results.append(resume); continue
+            if field in ("all", "education") and any(query_lower in e.lower() for e in resume.get("education", [])):
+                results.append(resume); continue
+            if field in ("all", "company") and any(query_lower in c.lower() for c in resume.get("previous_companies", [])):
+                results.append(resume); continue
 
-            if field in ["all", "name"]:
-                if query_lower in resume.get("name", "").lower():
-                    match = True
-            if field in ["all", "email"]:
-                if query_lower in resume.get("email", "").lower():
-                    match = True
-            if field in ["all", "skills"]:
-                if any(query_lower in skill.lower() for skill in resume.get("skills", [])):
-                    match = True
-            if field in ["all", "education"]:
-                if any(query_lower in edu.lower() for edu in resume.get("education", [])):
-                    match = True
-
-            if match:
-                results.append(resume)
-
-        logger.info(f"Search found {len(results)} resumes for query: {query}")
+        logger.info(f"Search found {len(results)} resumes for query: '{query}' (field={field})")
         return results
 
+    # ------------------------------------------------------------------ #
+    # Server status                                                        #
+    # ------------------------------------------------------------------ #
+
     def get_server_status(self) -> Dict[str, Any]:
-        """Get server status and statistics"""
+        """Return server statistics."""
+        total = len(self.parsed_resumes)
+        avg_completeness = 0.0
+        if total:
+            avg_completeness = sum(
+                r.get("completeness_score", 0) for r in self.parsed_resumes.values()
+            ) / total
+
         return {
-            "server_name": self.server_name,
-            "total_parsed_resumes": len(self.parsed_resumes),
-            "last_activity": datetime.now().isoformat(),
+            "server_name":          self.server_name,
+            "total_parsed_resumes": total,
+            "avg_completeness":     round(avg_completeness, 1),
+            "last_activity":        datetime.now().isoformat(),
         }
 
+    # ------------------------------------------------------------------ #
+    # Private helpers                                                      #
+    # ------------------------------------------------------------------ #
 
-# Global Resume Parser MCP instance
+    def _extract_information(self, text: str) -> Dict[str, Any]:
+        """Extract all structured fields from raw resume text."""
+        text_lower = text.lower()
+
+        data: Dict[str, Any] = {
+            "name":               self._extract_name(text),
+            "email":              "",
+            "phone":              "",
+            "linkedin":           "",
+            "github":             "",
+            "experience_years":   0.0,
+            "skills":             [],
+            "skill_groups":       {},
+            "education":          [],
+            "education_level":    0,
+            "previous_companies": [],
+            "completeness_score": 0.0,
+        }
+
+        # Email
+        m = _EMAIL_RE.search(text)
+        if m:
+            data["email"] = m.group().lower()
+
+        # Phone
+        m = _PHONE_RE.search(text)
+        if m:
+            data["phone"] = m.group().strip()
+
+        # LinkedIn / GitHub
+        m = _LINKEDIN_RE.search(text)
+        if m:
+            data["linkedin"] = f"linkedin.com/in/{m.group(1)}"
+        m = _GITHUB_RE.search(text)
+        if m:
+            data["github"] = f"github.com/{m.group(1)}"
+
+        # Experience years — try explicit "N years" first, then "since YYYY"
+        data["experience_years"] = self._extract_experience(text_lower)
+
+        # Skills with grouping
+        found_skills, skill_groups = self._extract_skills(text_lower)
+        data["skills"]       = found_skills
+        data["skill_groups"] = skill_groups
+
+        # Education — detect all levels, keep highest
+        found_edu, max_level = self._extract_education(text_lower)
+        data["education"]       = found_edu
+        data["education_level"] = max_level
+
+        # Companies
+        data["previous_companies"] = self._extract_companies(text)
+
+        # Completeness
+        data["completeness_score"] = self._calculate_completeness(data)
+
+        return data
+
+    def _extract_name(self, text: str) -> str:
+        """Attempt to pull the candidate's name from the top of the resume."""
+        m = _NAME_RE.search(text)
+        return m.group(1).strip() if m else ""
+
+    def _extract_experience(self, text_lower: str) -> float:
+        """Parse experience years from text. Falls back to 'since YYYY' calculation."""
+        m = _EXP_RE.search(text_lower)
+        if m:
+            return min(float(m.group(1)), 50.0)
+
+        # "Since 2018" or "from 2015"
+        m = _EXP_SINCE_RE.search(text_lower)
+        if m:
+            years = datetime.now().year - int(m.group(1))
+            return max(0.0, min(float(years), 50.0))
+
+        return 0.0
+
+    def _extract_skills(self, text_lower: str) -> tuple:
+        """Return (flat skill list, grouped skill dict)."""
+        found: List[str] = []
+        groups: Dict[str, List[str]] = {}
+        for group_name, skills in SKILL_GROUPS.items():
+            matched = [s for s in skills if s in text_lower]
+            if matched:
+                groups[group_name] = matched
+                found.extend(matched)
+        return found, groups
+
+    def _extract_education(self, text_lower: str) -> tuple:
+        """Return (list of detected degree keywords, highest level int)."""
+        found: List[str] = []
+        max_level = 0
+        for keyword, level in EDUCATION_LEVELS.items():
+            if keyword in text_lower:
+                found.append(keyword)
+                if level > max_level:
+                    max_level = level
+        return found, max_level
+
+    def _extract_companies(self, text: str) -> List[str]:
+        """Extract previous company names heuristically."""
+        matches = _COMPANY_RE.findall(text)
+        companies = list({c.strip() for c in matches if len(c.strip()) > 2})
+        return companies[:10]  # cap to avoid noise
+
+    def _calculate_completeness(self, resume: Dict) -> float:
+        """
+        Calculate completeness score 0–100.
+        Weighted: email 25, name 20, skills 20, experience 15, phone 10, education 10.
+        """
+        score = 0.0
+        if resume.get("email"):         score += 25
+        if resume.get("name"):          score += 20
+        if resume.get("skills"):        score += 20
+        if resume.get("experience_years", 0) > 0: score += 15
+        if resume.get("phone"):         score += 10
+        if resume.get("education"):     score += 10
+        return round(score, 1)
+
+    def _quality_grade(self, completeness: float, errors: List, warnings: List) -> str:
+        """Return A/B/C/D/F grade based on completeness and issues."""
+        if errors:
+            return "F"
+        if completeness >= 90 and len(warnings) == 0:
+            return "A"
+        if completeness >= 75:
+            return "B"
+        if completeness >= 50:
+            return "C"
+        if completeness >= 25:
+            return "D"
+        return "F"
+
+
+# Global singleton
 _resume_parser_mcp: Optional[ResumeParserMCP] = None
 
 
 def get_resume_parser_mcp() -> ResumeParserMCP:
-    """Get or create global Resume Parser MCP instance"""
+    """Get or create global Resume Parser MCP instance."""
     global _resume_parser_mcp
     if _resume_parser_mcp is None:
         _resume_parser_mcp = ResumeParserMCP()
