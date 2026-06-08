@@ -1,539 +1,169 @@
-# Architecture & Design Documentation
+Architecture & Design Documentation1.
 
-## System Overview
+System Overview
+The AI-Powered Recruitment Assistant leverages a decentralized, multi-agent framework designed to fully automate the end-to-end hiring pipeline. By employing asynchronous agent-to-agent communication patterns, the system decouples complex workflows, allowing for highly scalable and independent processing tasks.2. Structural Blueprint
 
-The AI-Powered Recruitment Assistant is built on a distributed, multi-agent architecture designed to automate the entire recruitment pipeline. The system uses agent-to-agent communication patterns for asynchronous workflow execution.
-
-## High-Level Architecture
-
-```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        UI Layer (Streamlit)                      │
+│                        User Interface (Streamlit)                │
 │  ┌─────────────┬──────────────────┬──────────────┬────────────┐  │
-│  │  Dashboard  │ Screening Portal │Interview Sch.│  Ranking   │  │
+│  │ Metrics Hub │ Screening Portal │Interview Hub │ Leaderboard│  │
 │  └─────────────┴──────────────────┴──────────────┴────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Orchestration Layer                           │
-│              (RecruitmentOrchestrator)                           │
+│                 (RecruitmentOrchestrator)                        │
 └─────────────────────────────────────────────────────────────────┘
                            ↓
 ┌──────────────────────────────────────────────────────────────────┐
-│                  Agent Layer (Multi-Agent System)                │
+│                   Collaborative Agent Cluster                    │
 │  ┌──────────────┬──────────────┬──────────────┬──────────────┐  │
-│  │   Resume     │   Job        │ Interview    │ Candidate    │  │
-│  │ Screening    │  Matching    │ Coordination │  Ranking     │  │
-│  │   Agent      │   Agent      │   Agent      │   Agent      │  │
+│  │   Vetting    │   Position   │  Scheduler   │  Evaluation  │  │
+│  │    Agent     │ Match Agent  │    Agent     │    Agent     │  │
 │  └──────────────┴──────────────┴──────────────┴──────────────┘  │
 │                                 ↑↓                               │
-│                          Message Broker                          │
+│                         Central Message Bus                      │
 │                    (Agent Communication Hub)                     │
 └──────────────────────────────────────────────────────────────────┘
                            ↓
 ┌──────────────────────────────────────────────────────────────────┐
-│                 MCP Servers Layer (Data Layer)                   │
+│                 MCP Servers (Data Access Layer)                  │
 │  ┌──────────────┬──────────────┬──────────────┐                 │
-│  │  ATS MCP     │ Calendar MCP │ Resume Parser│                 │
-│  │  (Candidates)│ (Interviews) │  MCP         │                 │
+│  │  ATS Engine  │ Calendar API │Extraction Engine               │
+│  │ (Profiles)   │ (Schedules)  │ (Resume Sync)│                 │
 │  └──────────────┴──────────────┴──────────────┘                 │
 └──────────────────────────────────────────────────────────────────┘
                            ↓
 ┌──────────────────────────────────────────────────────────────────┐
-│                   Data Models & Database                          │
-│  (Candidate, Resume, Job, Interview, Match, Ranking)            │
+│                      Persistent Storage                          │
+│     (Relational Schemas & Domain Entity Models)                  │
 └──────────────────────────────────────────────────────────────────┘
-```
+3. Component Deep Dive
+3.1 UI Layer (Streamlit)
+Core Function: Serves as the interactive interface for talent acquisition teams and hiring managers.
 
-## Component Details
+Metrics Hub (dashboard.py): Consolidates operational health parameters, pipeline funnels, and core recruitment metrics.
 
-### 1. UI Layer (Streamlit)
+Screening Portal (screening_portal.py): Manages inbound application processing, file ingestion, and initial profile assessments.
 
-**Purpose**: Provide intuitive interfaces for recruiters and hiring managers
+Interview Hub (interview_scheduler.py): Controls coordinator availability, dynamic calendar updates, and panel synchronization.
 
-**Components**:
-- **Dashboard** (`dashboard.py`): Main overview with metrics and pipeline visualization
-- **Screening Portal** (`screening_portal.py`): Resume submission and candidate evaluation
-- **Interview Scheduler** (`interview_scheduler.py`): Interview management and scheduling
-- **Ranking Dashboard**: Candidate comparison and ranking visualization
+Leaderboard Dashboard: Visually correlates and contrasts candidate matrix scores.
 
-**Key Features**:
-- Real-time metrics and updates
-- Interactive forms for data input
-- Status tracking and filtering
-- Export capabilities
+Key Capabilities: Real-time reactive UI updates, multi-criteria filtering, data persistence exports, and dynamic data ingestion forms.
 
-### 2. Orchestration Layer
+3.2 Orchestration Layer
+RecruitmentOrchestrator (orchestrator.py)
+Acts as the central transaction coordinator that routes processes across the agent collective.
 
-**RecruitmentOrchestrator** (`orchestrator.py`)
+[Inbound CV] ──> Vetting Agent ──(Pass)──> Match Agent ──(Match Found)──> Scheduler Agent ──> Evaluation Agent
+submit_resume(): Ingestion entry point for unparsed resumes.
 
-Manages the entire workflow and coordinates between agents:
+create_job_posting(): Provisions new requisitions within the data tier.
 
-```python
-orchestrator.submit_resume()
-    ↓
-Resume Screening Agent
-    ↓ (if passes)
-Job Matching Agent
-    ↓ (if matches)
-Interview Coordination Agent
-    ↓
-Candidate Ranking Agent
-```
+rank_candidates_for_job(): Programmatically triggers aggregate scoring routines across candidate pools.
 
-**Key Methods**:
-- `submit_resume()`: Entry point for resume processing
-- `create_job_posting()`: Create new job positions
-- `rank_candidates_for_job()`: Rank candidates for a job
-- `get_system_status()`: Retrieve system metrics
+get_system_status(): Queries system health statistics and agent telemetry.
 
-### 3. Agent Layer (Multi-Agent System)
+3.3 Collaborative Agent ClusterA. Vetting AgentModule: agents/resume_screening_agent.pyRole: Content normalization, profile entity extraction, missing metadata validation, and initial quality checks.
+Formula:$$\text{Score} = (\text{Completeness} \times 0.4) + (\text{Skills} \times 0.3) + (\text{Experience} \times 0.2) + (\text{Data Integrity} \times 0.1)$$Gatekeeper
+Logic: Progresses candidates to the next stage if $\text{Score} \ge 0.6$.Messaging: Dispatches a resume_submission payload to the Position Match Agent upon successful verification.
 
-#### 3.1 Resume Screening Agent
-**File**: `agents/resume_screening_agent.py`
+B. Position Match AgentModule: agents/job_matching_agent.pyRole: Maps extracted candidate capabilities against open requisition requirements to evaluate professional experience tenure and skill depth.
 
-**Responsibilities**:
-- Parse resume content
-- Extract candidate information
-- Validate resume quality
-- Calculate screening score
-- Determine initial qualification
+Formula:$$\text{Match \%} = \left( (\text{Skill Alignment} \times 0.6) + (\text{Tenure Alignment} \times 0.4) \right) \times 100$$Gatekeeper
+Logic: Isolates profiles with a $\text{Match \%} \ge 65\%$ and hands them off to the Evaluation Agent.
+Messaging: Translates assessments into a match_result message destined for the Evaluation Agent.
+C. Scheduler AgentModule: agents/interview_coordination_agent.pyRole: Negotiates inter-calendar availability, sets aside time allocations, modifies conflicting appointments, and updates evaluation matrices with real-time feedback data.
+Capability Set: Automated panelist routing, programmatic video link generation, and structured panel scoring inputs.Messaging: Pulls ranking_request notifications and issues interview_feedback records.
+D. Evaluation AgentModule: agents/candidate_ranking_agent.pyRole: Aggregates disparate scoring vectors into a unified index to deliver structured reports and tactical hiring recommendations.Formula:$$\text{Composite Score} = (\text{Vetting Score} \times 0.3) + (\text{Match Score} \times 0.4) + (\text{Interview Score} \times 0.3)$$
+4. Message Broker (Inter-Agent Communications)
+Module: core/communication.py
 
-**Scoring Algorithm**:
-```
-Score = (Completeness × 0.4) + (Skills × 0.3) + (Experience × 0.2) + (No Errors × 0.1)
-```
+Structural Pattern: Message Queue Architecture
 
-**Output**: Passes screening if Score ≥ 0.6
-
-**Communication**:
-- Receives: None
-- Sends: `resume_submission` to Job Matching Agent
-
-#### 3.2 Job Matching Agent
-**File**: `agents/job_matching_agent.py`
-
-**Responsibilities**:
-- Analyze candidate skills vs job requirements
-- Calculate skill match percentage
-- Assess experience fit
-- Generate match reasoning
-- Route to ranking agent
-
-**Matching Algorithm**:
-```
-Match % = (Skill Match × 0.6) + (Experience Match × 0.4) × 100
-```
-
-**Output**: Routes candidates with Match % ≥ 65% to Ranking Agent
-
-**Communication**:
-- Receives: `resume_submission` from Resume Screening Agent
-- Sends: `match_result` to Candidate Ranking Agent
-
-#### 3.3 Interview Coordination Agent
-**File**: `agents/interview_coordination_agent.py`
-
-**Responsibilities**:
-- Check interviewer availability
-- Schedule interviews
-- Manage time slots
-- Handle rescheduling
-- Record interview feedback
-
-**Features**:
-- Automatic interviewer assignment
-- Availability-based scheduling
-- Meeting link generation
-- Feedback recording
-
-**Communication**:
-- Receives: `ranking_request` from Ranking Agent
-- Sends: `interview_feedback` to Ranking Agent
-
-#### 3.4 Candidate Ranking Agent
-**File**: `agents/candidate_ranking_agent.py`
-
-**Responsibilities**:
-- Aggregate multiple scores
-- Calculate final ranking
-- Generate recommendations
-- Produce ranking reports
-
-**Ranking Algorithm**:
-```
-Final Score = (Screening Score × 0.3) + (Match Score × 0.4) + (Interview Score × 0.3)
-Recommendation:
-  - Score ≥ 80: STRONG_RECOMMEND
-  - Score ≥ 65: RECOMMEND
-  - Score ≥ 50: CONSIDER
-  - Score < 50: NOT_RECOMMENDED
-```
-
-**Communication**:
-- Receives: `match_result` from Job Matching Agent
-- Receives: `interview_feedback` from Interview Coordination Agent
-- Sends: Final rankings to orchestrator
-
-### 4. Message Broker (Agent Communication)
-
-**File**: `core/communication.py`
-
-**Architecture**: Message Queue Pattern
-
-**Message Types**:
-```python
-enum MessageType:
-    RESUME_SUBMISSION
-    SCREENING_RESULT
-    JOB_MATCH_REQUEST
-    MATCH_RESULT
-    RANKING_REQUEST
-    RANKING_RESULT
-    INTERVIEW_SCHEDULE_REQUEST
-    INTERVIEW_SCHEDULED
-    INTERVIEW_FEEDBACK
-    STATUS_UPDATE
-```
-
-**Message Structure**:
-```python
-{
-    "sender_agent": str,
-    "recipient_agent": str,
-    "message_type": MessageType,
-    "payload": Dict,
-    "timestamp": datetime,
-    "message_id": str,
-    "priority": int,
-    "requires_response": bool
-}
-```
-
-**Features**:
-- FIFO queue management
-- Priority-based processing
-- Message history tracking
-- Response handling
-- Error management
-
-### 5. MCP Servers Layer
-
-#### 5.1 ATS MCP (Applicant Tracking System)
-**File**: `mcp_servers/ats_mcp.py`
-
-**Data Structures**:
-- Candidates: Profile, contact, skills, experience
-- Job Postings: Title, requirements, department, location
-- Applications: Status tracking, history
-
-**Key Operations**:
-- CRUD for candidates and jobs
-- Application lifecycle management
-- Search and filtering
-- Status tracking
-
-**API Methods**:
-```python
-create_candidate(data) → candidate_id
-get_candidate(id) → candidate_data
-update_candidate(id, updates) → bool
-list_candidates(filters) → List[Candidate]
-create_job_posting(data) → job_id
-get_job_posting(id) → job_data
-create_application(candidate_id, job_id) → app_id
-```
-
-#### 5.2 Calendar MCP
-**File**: `mcp_servers/calendar_mcp.py`
-
-**Functionality**:
-- Interview scheduling
-- Availability management
-- Time slot allocation
-- Meeting link generation
-
-**Key Operations**:
-- Schedule/reschedule/cancel interviews
-- Manage interviewer availability
-- Find available slots
-- Track interview status
-
-**API Methods**:
-```python
-schedule_interview(data) → event_id
-add_availability(interviewer_id, slot) → bool
-check_availability(id, time, duration) → bool
-find_available_slots(id, duration) → List[Slot]
-get_interviews_for_candidate(id) → List[Interview]
-```
-
-#### 5.3 Resume Parser MCP
-**File**: `mcp_servers/resume_parser_mcp.py`
-
-**Capabilities**:
-- Text extraction from resumes
-- Information parsing (skills, education, experience)
-- Resume validation
-- Job-resume comparison
-
-**Extraction Patterns**:
-- Email: Regex pattern matching
-- Phone: Pattern matching for various formats
-- Skills: Keyword matching from predefined list
-- Experience: Duration extraction
-- Education: Degree keyword detection
-
-**Key Operations**:
-- Parse resume text
-- Extract candidate profile
-- Validate resume quality
-- Compare to job requirements
-
-**API Methods**:
-```python
-parse_resume(content, filename) → resume_id
-extract_candidate_profile(resume_id) → profile
-validate_resume(resume_id) → validation_report
-compare_resume_to_job(resume_id, requirements) → match_result
-```
-
-### 6. Data Layer
-
-**File**: `database/models.py`
-
-**Core Models**:
-
-```python
+Python
+# System Event Spectrum
+class MessageType(Enum):
+    RESUME_SUBMISSION           = "RESUME_SUBMISSION"
+    SCREENING_RESULT            = "SCREENING_RESULT"
+    JOB_MATCH_REQUEST           = "JOB_MATCH_REQUEST"
+    MATCH_RESULT                = "MATCH_RESULT"
+    RANKING_REQUEST             = "RANKING_REQUEST"
+    RANKING_RESULT              = "RANKING_RESULT"
+    INTERVIEW_SCHEDULE_REQUEST  = "INTERVIEW_SCHEDULE_REQUEST"
+    INTERVIEW_SCHEDULED         = "INTERVIEW_SCHEDULED"
+    INTERVIEW_FEEDBACK          = "INTERVIEW_FEEDBACK"
+    STATUS_UPDATE               = "STATUS_UPDATE"
+Python
+# Event Envelope Layout
 @dataclass
-class Resume:
-    id, candidate_id, name, email, phone
-    experience_years, skills, education
-    previous_companies, raw_text, parsed_at
+class AgentMessage:
+    sender_agent: str
+    recipient_agent: str
+    message_type: MessageType
+    payload: dict
+    timestamp: datetime
+    message_id: str
+    priority: int
+    requires_response: bool
+Broker Capabilities: Strict FIFO processing, deterministic priority queues, conversation history tracking, and native exception isolation.
 
-@dataclass
-class JobPosting:
-    id, title, description
-    required_skills, required_experience_years
-    department, salary_range, location, posted_date
+5. Model Context Protocol (MCP) Infrastructure
+5.1 ATS Engine (mcp_servers/ats_mcp.py)
+Encapsulates candidate identities, open job requirements, and structural application lifecycles.
 
-@dataclass
-class Candidate:
-    id, name, email, phone
-    resume, status, screening_score
-    match_score, ranking_score, notes
+create_candidate(data) -> candidate_id
 
-@dataclass
-class Interview:
-    id, candidate_id, job_id
-    scheduled_time, interviewer, interview_type
-    status, meeting_link, feedback, rating
+get_candidate(id) -> candidate_data
 
-@dataclass
-class MatchResult:
-    candidate_id, job_id, match_percentage
-    matched_skills, missing_skills
-    experience_fit, reasoning
+list_candidates(filters) -> List[Candidate]
 
-@dataclass
-class RankingResult:
-    candidate_id, job_id, rank, final_score
-    screening_score, match_score, interview_score
-    recommendation
-```
+create_job_posting(data) -> job_id
 
-## Workflow Sequence
+5.2 Calendar API (mcp_servers/calendar_mcp.py)
+Handles time-slot selection, interviewer availability configurations, and programmatic event orchestration.
 
-### Complete Recruitment Pipeline
+schedule_interview(data) -> event_id
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. RESUME SUBMISSION                                             │
-│    User uploads resume via UI                                   │
-│    → Sent to Resume Screening Agent                             │
-└─────────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 2. RESUME SCREENING                                              │
-│    - Parse resume (Resume Parser MCP)                           │
-│    - Extract information (skills, experience)                   │
-│    - Validate quality                                           │
-│    - Calculate screening score                                  │
-│    - Create candidate profile (ATS MCP)                         │
-└─────────────────────────────────────────────────────────────────┘
-                    ↓ (if passes)
-┌─────────────────────────────────────────────────────────────────┐
-│ 3. JOB MATCHING                                                   │
-│    - Get open jobs (ATS MCP)                                    │
-│    - Compare skills against requirements                        │
-│    - Calculate match score                                      │
-│    - Identify best matching position                            │
-│    - Send to Ranking Agent                                      │
-└─────────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 4. CANDIDATE RANKING                                             │
-│    - Receive match results                                      │
-│    - Aggregate scores                                           │
-│    - Generate initial ranking                                   │
-│    - Request interview scheduling                               │
-└─────────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 5. INTERVIEW COORDINATION                                        │
-│    - Check interviewer availability (Calendar MCP)              │
-│    - Find suitable time slots                                   │
-│    - Schedule interview                                         │
-│    - Generate meeting link                                      │
-│    - Send invitations                                           │
-└─────────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 6. INTERVIEW CONDUCTION                                          │
-│    - Interviewer conducts interview                             │
-│    - Records feedback and rating                                │
-│    - Sends results to Ranking Agent                             │
-└─────────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 7. FINAL RANKING & RECOMMENDATION                                │
-│    - Update ranking with interview score                        │
-│    - Generate final recommendations                             │
-│    - Export ranking report                                      │
-│    - Update candidate status                                    │
-└─────────────────────────────────────────────────────────────────┘
-```
+check_availability(id, time, duration) -> bool
 
-## Design Patterns Used
+find_available_slots(id, duration) -> List[Slot]
 
-### 1. Agent Pattern
-- Autonomous agents with independent state
-- Encapsulated responsibilities
-- Message-driven communication
+5.3 Extraction Engine (mcp_servers/resume_parser_mcp.py)
+Converts raw file streams into structured, typed data objects via regex patterns and heuristic keyword indices.
 
-### 2. Message Queue Pattern
-- Asynchronous communication
-- Decoupled systems
-- Priority-based processing
+parse_resume(content, filename) -> resume_id
 
-### 3. Repository Pattern
-- MCP servers act as repositories
-- Centralized data access
-- Abstraction of data storage
+validate_resume(resume_id) -> validation_report
 
-### 4. Factory Pattern
-- Singleton instances for MCP servers
-- Global orchestrator instance
-- Message broker creation
+compare_resume_to_job(resume_id, requirements) -> match_result
 
-### 5. Strategy Pattern
-- Different scoring strategies
-- Pluggable algorithms
-- Configurable thresholds
+6. Architecture & System Patterns
+Agent Architecture: Autonomous entities handling processing blocks via isolated states and message passing.
 
-## Configuration Management
+Message-Driven Architecture: Decoupled asynchronous messaging that protects system stability from single point-of-failure errors.
 
-**Config File**: `config.py`
+Repository Design: MCP abstractions act as data access interfaces, separating data store interactions from the core application logic.
 
-**Configuration Areas**:
-- Agent thresholds and weights
-- MCP server settings
-- Database connection
-- Logging configuration
-- Scoring algorithms
-- UI preferences
+Strategy Implementation: Interchangeable scoring mechanics and custom threshold settings that can change at runtime.
 
-**Loading**:
-```python
-from config import get_config
-config = get_config()
-agent_config = config.get_agent_config("resume_screening")
-```
+7. Operations & Security Safeguards
+Error Abstraction & Resiliency
+Structured try-except blocks protect all runtime-critical operations.
 
-## Error Handling & Resilience
+Configurable exponential backoff retry cycles on the message queue manage transient drops.
 
-**Error Handling Strategy**:
-- Try-catch blocks in critical sections
-- Graceful degradation
-- Error logging and reporting
-- Fallback mechanisms
+Graceful state persistence ensures data isn't lost during abrupt system restarts.
 
-**Resilience Features**:
-- Message retry logic
-- Timeout handling
-- Graceful shutdown
-- State persistence
+Performance Optimization
+Asynchronous network calling and local caching prevent unnecessary database hits on frequently used datasets.
 
-## Performance Considerations
+Data mutations are processed via optimized batch queues to prevent connection bottlenecks.
 
-**Optimization Areas**:
-- Message batching
-- Caching frequently accessed data
-- Async operations
-- Database query optimization
+Security Stance
+Ensures strict separation of internal logs from Personal Identifiable Information (PII).
 
-**Scalability**:
-- Horizontal scaling of agents
-- Message broker clustering (future)
-- Database indexing
-- Load balancing (future)
+Applies deep data validation at boundaries to protect against payload injections.
 
-## Security Considerations
-
-**Implemented**:
-- Logging without sensitive data
-- Input validation
-- Error messages without leaking internals
-
-**Recommended (Production)**:
-- Authentication/Authorization
-- Data encryption at rest
-- TLS for communication
-- Audit logging
-- Role-based access control
-
-## Testing Strategy
-
-**Test Types**:
-- Unit tests for individual agents
-- Integration tests for workflows
-- System tests for end-to-end scenarios
-
-**Test File**: `example_usage.py`
-- Demonstrates system usage
-- Validates workflows
-- Provides test cases
-
-## Deployment Architecture
-
-**Current**: Single-instance in-memory
-**Future Options**:
-- Containerized (Docker)
-- Kubernetes orchestration
-- Distributed deployment
-- Message queue (RabbitMQ/Kafka)
-- Database backend (PostgreSQL)
-
-## Monitoring & Observability
-
-**Logging**:
-- Structured logging at each stage
-- Agent activity tracking
-- Message broker metrics
-
-**Metrics**:
-- Processing times
-- Success/failure rates
-- Queue depths
-- System utilization
-
-**Status Endpoints**:
-- System status API
-- Agent status
-- MCP server status
-- Message broker statistics
-
----
-
-**Version**: 1.0.0
-**Last Updated**: January 2024
+Production Target Note: Ensure transit encryption (TLS) is active and hook into a centralized Role-Based Access Control (RBAC) model.
