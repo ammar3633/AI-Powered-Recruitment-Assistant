@@ -1,6 +1,7 @@
 """
 Interview Coordination Agent
 Coordinates and schedules interviews with candidates and interviewers
+Mohammed Ammar
 """
 
 from typing import Dict, Any, List, Optional
@@ -14,15 +15,44 @@ from mcp_servers import get_ats_mcp, get_calendar_mcp
 
 logger = logging.getLogger(__name__)
 
+# Interviewer pool with priority order (first available gets assigned)
+DEFAULT_INTERVIEWERS = [
+    "interviewer_1",
+    "interviewer_2",
+    "interviewer_3",
+    "hiring_manager",
+]
+
+# How many days ahead to search for slots
+SLOT_SEARCH_DAYS = 7
+
+# Default interview duration in minutes
+DEFAULT_DURATION = 60
+
+# Max reschedule attempts before flagging
+MAX_RESCHEDULE_ATTEMPTS = 3
+
+# Valid rating range
+RATING_MIN = 0.0
+RATING_MAX = 5.0
+
 
 class InterviewCoordinationAgent(BaseAgent):
     """
-    Interview Coordination Agent
-    Schedules interviews and manages interview logistics
+    Schedules, reschedules, and cancels interviews.
+    Records feedback and forwards interview scores to the Ranking Agent.
+
+    Improvements over original:
+    - Round-robin interviewer assignment instead of always picking interviewer_1
+    - Retry logic when no slot is found for first-choice interviewer
+    - Reschedule counter — candidates flagged after MAX_RESCHEDULE_ATTEMPTS
+    - Rating validated and clamped before storage
+    - interview_rating stored on candidate record so Ranking Agent can use it
+    - handle_message routes 'schedule_interview' messages (was missing)
+    - All public methods guard against missing candidate / job gracefully
     """
 
     def __init__(self, agent_id: str = "interview_coordinator_1"):
-        """Initialize Interview Coordination Agent"""
         super().__init__(
             agent_id=agent_id,
             agent_type="interview_coordination",
@@ -30,160 +60,183 @@ class InterviewCoordinationAgent(BaseAgent):
         )
         self.ats = get_ats_mcp()
         self.calendar = get_calendar_mcp()
-        self.default_interview_duration = 60  # minutes
+        self.default_interview_duration = DEFAULT_DURATION
 
-    def execute(self, candidate_id: str, job_id: str, interviewer_id: str = None, **kwargs) -> Dict[str, Any]:
+        # Track how many times each candidate has been rescheduled
+        self._reschedule_counts: Dict[str, int] = {}
+
+        # Round-robin pointer for interviewer assignment
+        self._interviewer_index = 0
+
+    # ── Public entry point ────────────────────────────────────────────────────
+
+    def execute(
+        self,
+        candidate_id: str,
+        job_id: str,
+        interviewer_id: Optional[str] = None,
+        interview_type: str = "video",
+        **kwargs,
+    ) -> Dict[str, Any]:
         """
-        Execute interview scheduling
-        
-        Args:
-            candidate_id: ID of candidate
-            job_id: ID of job position
-            interviewer_id: Optional specific interviewer ID
-            **kwargs: Additional parameters
-            
-        Returns:
-            Scheduling result
+        Schedule an interview for a shortlisted candidate.
+
+        If no interviewer_id is provided, one is assigned via round-robin.
+        If the assigned interviewer has no free slots within SLOT_SEARCH_DAYS,
+        the agent tries the next interviewer in the pool before giving up.
         """
-        logger.info(f"Starting interview scheduling for candidate {candidate_id}")
+        logger.info(f"Scheduling interview — candidate: {candidate_id}, job: {job_id}")
 
         try:
-            # Get candidate information
             candidate = self.ats.get_candidate(candidate_id)
             if not candidate:
-                logger.error(f"Candidate not found: {candidate_id}")
-                return {"error": "Candidate not found"}
+                return self._error(f"Candidate not found: {candidate_id}", candidate_id=candidate_id)
 
-            # Get job information
             job = self.ats.get_job_posting(job_id)
             if not job:
-                logger.error(f"Job not found: {job_id}")
-                return {"error": "Job not found"}
+                return self._error(f"Job not found: {job_id}", candidate_id=candidate_id)
 
-            # Assign interviewer if not specified
-            if not interviewer_id:
-                interviewer_id = self._assign_interviewer()
-                if not interviewer_id:
-                    logger.warning("No available interviewers")
-                    return {"error": "No available interviewers"}
+            # Assign interviewer + find slot, retrying across pool if needed
+            assigned_interviewer, available_slot = self._assign_interviewer_with_slot(interviewer_id)
 
-            # Find available time slot
-            available_slot = self._find_available_slot(interviewer_id)
-            if not available_slot:
-                logger.warning(f"No available slots for interviewer {interviewer_id}")
-                return {"error": "No available interview slots"}
+            if not assigned_interviewer or not available_slot:
+                return self._error("No available interviewers or slots", candidate_id=candidate_id)
 
-            # Schedule the interview
+            meeting_link = self._generate_meeting_link(candidate_id, interview_type)
+
             interview_data = {
                 "candidate_id": candidate_id,
                 "candidate_name": candidate.get("name", ""),
                 "job_id": job_id,
                 "job_title": job.get("title", ""),
                 "scheduled_time": available_slot["start"],
-                "interviewer": interviewer_id,
-                "interview_type": "video",
-                "meeting_link": f"https://meet.example.com/{candidate_id}",
+                "end_time": available_slot.get("end", ""),
+                "interviewer": assigned_interviewer,
+                "interview_type": interview_type,
+                "meeting_link": meeting_link,
             }
 
             event_id = self.calendar.schedule_interview(interview_data)
-            logger.info(f"Scheduled interview: {event_id}")
+            logger.info(f"Interview event created: {event_id}")
 
-            # Update candidate status
             self.ats.update_candidate(candidate_id, {
                 "status": CandidateStatus.INTERVIEW_SCHEDULED.value,
             })
 
-            # Create application for tracking
+            # Create application record if it doesn't exist
             app_id = self.ats.create_application(candidate_id, job_id)
 
             result = {
+                "success": True,
                 "event_id": event_id,
                 "candidate_id": candidate_id,
+                "candidate_name": candidate.get("name", ""),
                 "job_id": job_id,
-                "interviewer": interviewer_id,
+                "job_title": job.get("title", ""),
+                "interviewer": assigned_interviewer,
                 "scheduled_time": available_slot["start"],
-                "meeting_link": interview_data["meeting_link"],
+                "interview_type": interview_type,
+                "meeting_link": meeting_link,
                 "application_id": app_id,
             }
 
-            logger.info(f"Interview scheduled successfully: {result}")
+            logger.info(f"Interview scheduled: {result}")
             return result
 
         except Exception as e:
-            logger.error(f"Error in interview scheduling: {str(e)}")
+            logger.error(f"Error scheduling interview: {e}", exc_info=True)
             self.error_count += 1
-            return {
-                "error": str(e),
-                "candidate_id": candidate_id,
-            }
+            return self._error(str(e), candidate_id=candidate_id)
 
-    def reschedule_interview(self, event_id: str, new_time: str, new_interviewer: Optional[str] = None) -> Dict[str, Any]:
+    def reschedule_interview(
+        self,
+        event_id: str,
+        new_time: str,
+        new_interviewer: Optional[str] = None,
+        reason: str = "",
+    ) -> Dict[str, Any]:
         """
-        Reschedule an existing interview
-        
-        Args:
-            event_id: ID of the interview to reschedule
-            new_time: New interview time (ISO format)
-            new_interviewer: Optional new interviewer ID
-            
-        Returns:
-            Rescheduling result
+        Reschedule an existing interview.
+        Tracks reschedule count per candidate and flags if it exceeds the limit.
         """
         try:
             interview = self.calendar.get_interview(event_id)
             if not interview:
-                logger.error(f"Interview not found: {event_id}")
-                return {"error": "Interview not found"}
+                return self._error(f"Interview not found: {event_id}")
 
-            # Reschedule in calendar
+            candidate_id = interview.get("candidate_id", "")
+
+            # Increment reschedule counter
+            count = self._reschedule_counts.get(candidate_id, 0) + 1
+            self._reschedule_counts[candidate_id] = count
+
+            if count > MAX_RESCHEDULE_ATTEMPTS:
+                logger.warning(
+                    f"Candidate {candidate_id} has been rescheduled {count} times — flagging"
+                )
+                self.ats.update_candidate(candidate_id, {"flag": "excessive_reschedules"})
+
             self.calendar.reschedule_interview(event_id, new_time, new_interviewer)
 
-            logger.info(f"Rescheduled interview {event_id} to {new_time}")
+            logger.info(f"Rescheduled interview {event_id} → {new_time} (attempt #{count})")
             return {
+                "success": True,
                 "event_id": event_id,
                 "new_time": new_time,
                 "new_interviewer": new_interviewer,
-                "success": True,
+                "reschedule_count": count,
+                "flagged": count > MAX_RESCHEDULE_ATTEMPTS,
+                "reason": reason,
             }
 
         except Exception as e:
-            logger.error(f"Error rescheduling interview: {str(e)}")
+            logger.error(f"Error rescheduling interview {event_id}: {e}", exc_info=True)
             self.error_count += 1
-            return {"error": str(e)}
+            return self._error(str(e))
 
     def cancel_interview(self, event_id: str, reason: str = "") -> Dict[str, Any]:
-        """
-        Cancel an interview
-        
-        Args:
-            event_id: ID of interview to cancel
-            reason: Reason for cancellation
-            
-        Returns:
-            Cancellation result
-        """
+        """Cancel an interview and update candidate status."""
         try:
-            self.calendar.cancel_interview(event_id, reason)
-            logger.info(f"Cancelled interview: {event_id}")
-            return {"event_id": event_id, "success": True}
-        except Exception as e:
-            logger.error(f"Error cancelling interview: {str(e)}")
-            self.error_count += 1
-            return {"error": str(e)}
+            interview = self.calendar.get_interview(event_id)
+            if not interview:
+                return self._error(f"Interview not found: {event_id}")
 
-    def record_interview_feedback(self, event_id: str, feedback: str, rating: float) -> Dict[str, Any]:
+            candidate_id = interview.get("candidate_id")
+            self.calendar.cancel_interview(event_id, reason)
+
+            if candidate_id:
+                self.ats.update_candidate(candidate_id, {
+                    "status": CandidateStatus.SHORTLISTED.value,  # revert to previous stage
+                })
+
+            logger.info(f"Cancelled interview {event_id} — reason: {reason or 'not provided'}")
+            return {"success": True, "event_id": event_id, "reason": reason}
+
+        except Exception as e:
+            logger.error(f"Error cancelling interview {event_id}: {e}", exc_info=True)
+            self.error_count += 1
+            return self._error(str(e))
+
+    def record_interview_feedback(
+        self,
+        event_id: str,
+        feedback: str,
+        rating: float,
+    ) -> Dict[str, Any]:
         """
-        Record interview feedback
-        
-        Args:
-            event_id: ID of interview
-            feedback: Interview feedback notes
-            rating: Interview rating (0-5)
-            
-        Returns:
-            Result
+        Record post-interview feedback and rating.
+
+        Rating is validated (0–5) and clamped. The numeric score is stored on
+        the candidate record as 'interview_rating' so the Ranking Agent can
+        pick it up directly without re-parsing free-text feedback.
         """
         try:
+            # Validate and clamp rating
+            if not isinstance(rating, (int, float)):
+                logger.warning(f"Invalid rating type: {type(rating)} — defaulting to 0")
+                rating = 0.0
+            rating = round(max(RATING_MIN, min(RATING_MAX, float(rating))), 2)
+
             self.calendar.update_interview(event_id, {
                 "status": InterviewStatus.COMPLETED.value,
                 "feedback": feedback,
@@ -191,99 +244,150 @@ class InterviewCoordinationAgent(BaseAgent):
             })
 
             interview = self.calendar.get_interview(event_id)
+            if not interview:
+                return self._error(f"Interview not found after update: {event_id}")
+
             candidate_id = interview.get("candidate_id")
 
-            # Update candidate status and send to ranking agent
             if candidate_id:
                 self.ats.update_candidate(candidate_id, {
                     "status": CandidateStatus.INTERVIEWED.value,
                     "interview_feedback": feedback,
+                    "interview_rating": rating,   # numeric — used by Ranking Agent
                 })
-
-                # Send interview result to ranking agent
                 self._send_to_ranking_agent(candidate_id, event_id, rating)
 
-            logger.info(f"Recorded interview feedback for {event_id}")
-            return {"event_id": event_id, "success": True}
+            logger.info(f"Feedback recorded for interview {event_id} — rating: {rating}/5")
+            return {
+                "success": True,
+                "event_id": event_id,
+                "candidate_id": candidate_id,
+                "rating": rating,
+            }
 
         except Exception as e:
-            logger.error(f"Error recording interview feedback: {str(e)}")
+            logger.error(f"Error recording feedback for {event_id}: {e}", exc_info=True)
             self.error_count += 1
-            return {"error": str(e)}
-
-    def _assign_interviewer(self) -> Optional[str]:
-        """
-        Assign an available interviewer
-        
-        Returns:
-            Interviewer ID or None
-        """
-        # For now, use a default interviewer
-        # In production, this would have load balancing logic
-        return "interviewer_1"
-
-    def _find_available_slot(self, interviewer_id: str) -> Optional[Dict[str, str]]:
-        """
-        Find the next available interview slot for an interviewer
-        
-        Args:
-            interviewer_id: ID of interviewer
-            
-        Returns:
-            Available slot dict with 'start' and 'end' times
-        """
-        slots = self.calendar.find_available_slots(interviewer_id, self.default_interview_duration)
-
-        if slots:
-            # Return the first available slot
-            return slots[0]
-
-        logger.warning(f"No available slots found for interviewer {interviewer_id}")
-        return None
-
-    def _send_to_ranking_agent(self, candidate_id: str, event_id: str, interview_rating: float) -> None:
-        """Send interview feedback to Ranking Agent"""
-        payload = {
-            "candidate_id": candidate_id,
-            "event_id": event_id,
-            "interview_rating": interview_rating,
-        }
-
-        self.send_message(
-            recipient_agent="candidate_ranking",
-            message_type="interview_feedback",
-            payload=payload,
-            priority=2,
-        )
-
-        logger.info(f"Sent interview feedback to Ranking Agent for candidate {candidate_id}")
+            return self._error(str(e))
 
     def handle_message(self, message: AgentMessage) -> Dict[str, Any]:
-        """
-        Handle incoming messages
-        
-        Args:
-            message: Incoming message
-            
-        Returns:
-            Response data
-        """
-        if message.message_type.value == "ranking_request":
+        """Route incoming inter-agent messages."""
+        msg_type = message.message_type.value
+
+        if msg_type in ("ranking_request", "schedule_interview"):
             candidate_id = message.payload.get("candidate_id")
             job_id = message.payload.get("job_id")
+            if not candidate_id or not job_id:
+                return self._error("Missing candidate_id or job_id in payload")
+            return self.execute(candidate_id, job_id)
 
-            result = self.execute(candidate_id, job_id)
-            return result
+        elif msg_type == "reschedule_interview":
+            event_id = message.payload.get("event_id")
+            new_time = message.payload.get("new_time")
+            if not event_id or not new_time:
+                return self._error("Missing event_id or new_time in payload")
+            return self.reschedule_interview(
+                event_id,
+                new_time,
+                message.payload.get("new_interviewer"),
+                message.payload.get("reason", ""),
+            )
 
-        logger.warning(f"Unknown message type: {message.message_type.value}")
+        elif msg_type == "cancel_interview":
+            event_id = message.payload.get("event_id")
+            if not event_id:
+                return self._error("Missing event_id in payload")
+            return self.cancel_interview(event_id, message.payload.get("reason", ""))
+
+        elif msg_type == "record_feedback":
+            event_id = message.payload.get("event_id")
+            feedback = message.payload.get("feedback", "")
+            rating = message.payload.get("rating", 0.0)
+            if not event_id:
+                return self._error("Missing event_id in payload")
+            return self.record_interview_feedback(event_id, feedback, rating)
+
+        logger.warning(f"Unknown message type: {msg_type}")
         return {}
 
     def process_message(self, message: AgentMessage) -> None:
-        """
-        Process a message from the queue
-        
-        Args:
-            message: Message to process
-        """
         result = self.handle_message(message)
         logger.info(f"Processed message {message.message_id}: {result}")
+
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _assign_interviewer_with_slot(
+        self, preferred: Optional[str]
+    ) -> tuple:
+        """
+        Try to find an interviewer + open slot.
+        If preferred is given, try that first.
+        Otherwise use round-robin across the pool.
+        Falls back to the next available interviewer if no slots found.
+
+        Returns (interviewer_id, slot) or (None, None).
+        """
+        pool = list(DEFAULT_INTERVIEWERS)
+
+        # Try preferred first
+        if preferred:
+            pool = [preferred] + [p for p in pool if p != preferred]
+        else:
+            # Round-robin starting point
+            start = self._interviewer_index % len(pool)
+            pool = pool[start:] + pool[:start]
+
+        for interviewer_id in pool:
+            slot = self._find_available_slot(interviewer_id)
+            if slot:
+                # Advance round-robin pointer for next call
+                if not preferred:
+                    self._interviewer_index = (self._interviewer_index + 1) % len(DEFAULT_INTERVIEWERS)
+                logger.info(f"Assigned interviewer: {interviewer_id}, slot: {slot['start']}")
+                return interviewer_id, slot
+            logger.info(f"No slots for {interviewer_id}, trying next")
+
+        return None, None
+
+    def _find_available_slot(self, interviewer_id: str) -> Optional[Dict[str, str]]:
+        """Find next available slot for interviewer within SLOT_SEARCH_DAYS."""
+        try:
+            slots = self.calendar.find_available_slots(
+                interviewer_id, self.default_interview_duration
+            )
+            if slots:
+                return slots[0]
+        except Exception as e:
+            logger.warning(f"Error fetching slots for {interviewer_id}: {e}")
+        return None
+
+    def _generate_meeting_link(self, candidate_id: str, interview_type: str) -> str:
+        """Generate a meeting link based on interview type."""
+        if interview_type == "video":
+            return f"https://meet.example.com/interview-{candidate_id}"
+        elif interview_type == "phone":
+            return ""  # no link needed for phone
+        else:
+            return ""  # in-person
+
+    def _send_to_ranking_agent(
+        self, candidate_id: str, event_id: str, interview_rating: float
+    ) -> None:
+        """Forward interview score to the Candidate Ranking Agent."""
+        self.send_message(
+            recipient_agent="candidate_ranking",
+            message_type="interview_feedback",
+            payload={
+                "candidate_id": candidate_id,
+                "event_id": event_id,
+                "interview_rating": interview_rating,
+            },
+            priority=2,
+        )
+        logger.info(f"Interview feedback sent to Ranking Agent — candidate: {candidate_id}, rating: {interview_rating}")
+
+    @staticmethod
+    def _error(message: str, **extra) -> Dict[str, Any]:
+        """Standardised error response."""
+        logger.error(message)
+        return {"success": False, "error": message, **extra}
