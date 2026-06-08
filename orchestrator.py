@@ -2,7 +2,6 @@
 Main orchestration script for AI-Powered Recruitment Assistant
 Initializes all agents and MCP servers and orchestrates the recruitment workflow
 """
-
 import logging
 from typing import Dict, Any
 
@@ -251,7 +250,6 @@ def get_orchestrator() -> RecruitmentOrchestrator:
     if _orchestrator is None:
         _orchestrator = RecruitmentOrchestrator()
     return _orchestrator
-
 
 if __name__ == "__main__":
     logger.info("=" * 60)
