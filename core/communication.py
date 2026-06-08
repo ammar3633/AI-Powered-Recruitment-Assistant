@@ -2,7 +2,6 @@
 Agent-to-Agent Communication Framework
 Handles inter-agent communication and message passing
 """
-
 from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass, field
 from enum import Enum
