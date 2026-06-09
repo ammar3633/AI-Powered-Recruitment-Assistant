@@ -4,7 +4,6 @@ A multi-agent recruitment automation system built with Google ADK and MCP server
 
 **Built by:** Mohammed Ammar  
 **Stack:** Python, Google ADK, FastMCP, Streamlit
-
 ---
 
 ## What it does
